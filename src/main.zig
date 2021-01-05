@@ -5,23 +5,23 @@ const Allocator = std.mem.Allocator;
 
 // ustar tar implementation
 pub const Header = extern struct {
-    name: [100]u8,
-    mode: [8]u8,
-    uid: [8]u8,
-    gid: [8]u8,
-    size: [11:0]u8,
-    mtime: [12]u8,
-    checksum: [8]u8,
+    name: [100]u8 = std.mem.zeroes([100]u8),
+    mode: [7:0]u8 = [_]u8{'0'} ** 4 ++ [_]u8{'6'} ** 3,
+    uid: [7:0]u8 = [_]u8{'0'} ** 7,
+    gid: [7:0]u8 = [_]u8{'0'} ** 7,
+    size: [11:0]u8 = [_]u8{'0'} ** 11,
+    mtime: [11:0]u8 = [_]u8{'0'} ** 11,
+    checksum: [7:0]u8 = [_]u8{'0'} ** 7,
     typeflag: FileType,
-    linkname: [100]u8,
-    magic: [6]u8,
-    version: [2]u8,
-    uname: [32]u8,
-    gname: [32]u8,
-    devmajor: [8]u8,
-    devminor: [8]u8,
-    prefix: [155]u8,
-    pad: [12]u8 = [_]u8{0} ** 12,
+    linkname: [100]u8 = std.mem.zeroes([100]u8),
+    magic: [5:0]u8 = [_]u8{ 'u', 's', 't', 'a', 'r' },
+    version: [2]u8 = [_]u8{ '0', '0' },
+    uname: [31:0]u8 = [_]u8{ 'r', 'o', 'o', 't' } ++ std.mem.zeroes([27]u8),
+    gname: [31:0]u8 = [_]u8{ 'r', 'o', 'o', 't' } ++ std.mem.zeroes([27]u8),
+    devmajor: [7:0]u8 = [_]u8{'0'} ** 7,
+    devminor: [7:0]u8 = [_]u8{'0'} ** 7,
+    prefix: [155]u8 = std.mem.zeroes([155]u8),
+    pad: [12]u8 = std.mem.zeroes([12]u8),
 
     const Self = @This();
 
@@ -38,6 +38,29 @@ pub const Header = extern struct {
         extended = 'x',
         _,
     };
+
+    fn fromStat(stat: std.fs.File.Stat, path: []const u8) !Header {
+        if (std.mem.indexOf(u8, path, "\\") != null) return error.NeedPosixPath;
+        if (std.fs.path.isAbsolute(path)) return error.NeedRelPath;
+
+        var ret = Header{
+            .typeflag = switch (stat.kind) {
+                .File => .regular,
+                .Directory => .directory,
+                else => return error.UnsupportedType,
+            },
+        };
+
+        const name = if (path > 100) {
+            return error.Todo;
+        } else path;
+
+        _ = try std.fmt.bufPrint(&ret.name, "{}", name);
+        _ = try std.fmt.bufPrint(&ret.size, "{o:0>11}", stat.size);
+        _ = try std.fmt.bufPrint(&ret.mtime, "{o:0>11}", stat.mtime);
+
+        return ret;
+    }
 
     pub fn isBlank(self: *const Header) bool {
         const block = std.mem.asBytes(self);
@@ -127,4 +150,64 @@ pub fn instantiate(
             else => {},
         }
     }
+}
+
+pub fn Archive(comptime Writer: type) type {
+    return struct {
+        writer: anytype,
+
+        const Self = @This();
+
+        /// prefix is a path to prepend subpath with
+        pub fn addFile(
+            self: *Self,
+            allocator: *Allocator,
+            root: std.fs.Dir,
+            prefix: ?[]const u8,
+            subpath: []const u8,
+        ) !void {
+            const path = if (prefix) |prefix_path|
+                try std.fs.join(allocator, &[_][]const u8{ prefix_path, subpath })
+            else
+                subpath;
+            defer if (prefix != null) allocator.free(path);
+
+            const subfile = try root.openFile(subpath, .{ .read = true, .write = true });
+            defer subfile.close();
+
+            const stat = try subfile.stat();
+            var header = try Header.fromStat(stat, path);
+
+            var fifo = std.fifo.LinearFifo(u8, .{ .Static = std.mem.page_size }).init();
+            try self.writer.writeAll(std.mem.asBytes(&header));
+            var counter = std.io.countingWriter(self.writer());
+            try fifo.pump(file.reader(), counter.writer());
+            const padding = 512 - (counter.bytes_written % 512);
+            try self.writer.writeByteNTimes(0, padding);
+        }
+
+        /// add slice of bytes as file `path`
+        pub fn addSlice(self: *Self, slice: []const u8, path: []const u8) !void {
+            const stat = Stat{
+                .inode = undefined,
+                .size = slice.len,
+                .mode = undefined,
+                .kind = .file,
+                .atime = undefined,
+                // TODO: get current time
+                .mtime = 0,
+                .ctime = undefined,
+            };
+
+            var header = try Header.fromStat(stat, path);
+            const padding = 512 - (slice.len % 512);
+            try self.writer.writeAll(std.mem.asBytes(&header));
+            try self.writer.writeAll(slice);
+            try self.writer.writeByteNTimes(0, padding);
+        }
+    };
+}
+
+pub fn archive(writer: anytype) Archive(@TypeOf(writer)) {
+    return .{ .writer = writer };
 }
