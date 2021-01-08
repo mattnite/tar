@@ -6,20 +6,20 @@ const Allocator = std.mem.Allocator;
 // ustar tar implementation
 pub const Header = extern struct {
     name: [100]u8 = std.mem.zeroes([100]u8),
-    mode: [7:0]u8 = [_]u8{'0'} ** 4 ++ [_]u8{'6'} ** 3,
-    uid: [7:0]u8 = [_]u8{'0'} ** 7,
-    gid: [7:0]u8 = [_]u8{'0'} ** 7,
-    size: [11:0]u8 = [_]u8{'0'} ** 11,
-    mtime: [11:0]u8 = [_]u8{'0'} ** 11,
-    checksum: [7:0]u8 = [_]u8{'0'} ** 7,
+    mode: [7:0]u8 = [_:0]u8{ '0', '0', '0', '0', '6', '6', '6' },
+    uid: [7:0]u8 = [_:0]u8{'0'} ** 7,
+    gid: [7:0]u8 = [_:0]u8{'0'} ** 7,
+    size: [11:0]u8 = [_:0]u8{'0'} ** 11,
+    mtime: [11:0]u8 = [_:0]u8{'0'} ** 11,
+    checksum: [7:0]u8 = [_:0]u8{'0'} ** 7,
     typeflag: FileType,
     linkname: [100]u8 = std.mem.zeroes([100]u8),
-    magic: [5:0]u8 = [_]u8{ 'u', 's', 't', 'a', 'r' },
-    version: [2]u8 = [_]u8{ '0', '0' },
-    uname: [31:0]u8 = [_]u8{ 'r', 'o', 'o', 't' } ++ std.mem.zeroes([27]u8),
-    gname: [31:0]u8 = [_]u8{ 'r', 'o', 'o', 't' } ++ std.mem.zeroes([27]u8),
-    devmajor: [7:0]u8 = [_]u8{'0'} ** 7,
-    devminor: [7:0]u8 = [_]u8{'0'} ** 7,
+    magic: [5:0]u8 = [_:0]u8{ 'u', 's', 't', 'a', 'r' },
+    version: [2]u8 = [_:0]u8{ '0', '0' },
+    uname: [31:0]u8 = [_:0]u8{ 'r', 'o', 'o', 't' } ++ std.mem.zeroes([27]u8),
+    gname: [31:0]u8 = [_:0]u8{ 'r', 'o', 'o', 't' } ++ std.mem.zeroes([27]u8),
+    devmajor: [7:0]u8 = [_:0]u8{'0'} ** 7,
+    devminor: [7:0]u8 = [_:0]u8{'0'} ** 7,
     prefix: [155]u8 = std.mem.zeroes([155]u8),
     pad: [12]u8 = std.mem.zeroes([12]u8),
 
@@ -43,7 +43,8 @@ pub const Header = extern struct {
         if (std.mem.indexOf(u8, path, "\\") != null) return error.NeedPosixPath;
         if (std.fs.path.isAbsolute(path)) return error.NeedRelPath;
 
-        var ret = Header{
+        var ret = std.mem.zeroes(Header);
+        ret = Header{
             .typeflag = switch (stat.kind) {
                 .File => .regular,
                 .Directory => .directory,
@@ -51,13 +52,18 @@ pub const Header = extern struct {
             },
         };
 
-        const name = if (path > 100) {
+        const name = if (path.len > 100) {
             return error.Todo;
         } else path;
 
-        _ = try std.fmt.bufPrint(&ret.name, "{}", name);
-        _ = try std.fmt.bufPrint(&ret.size, "{o:0>11}", stat.size);
-        _ = try std.fmt.bufPrint(&ret.mtime, "{o:0>11}", stat.mtime);
+        _ = try std.fmt.bufPrint(&ret.name, "{}", .{name});
+        _ = try std.fmt.bufPrint(&ret.size, "{o:0>11}", .{stat.size});
+        _ = try std.fmt.bufPrint(&ret.mtime, "{o:0>11}", .{stat.mtime});
+
+        var checksum: usize = 0;
+        for (std.mem.asBytes(&ret)) |val| checksum += val;
+
+        _ = try std.fmt.bufPrint(&ret.checksum, "{o:0>7}", .{checksum});
 
         return ret;
     }
@@ -154,9 +160,13 @@ pub fn instantiate(
 
 pub fn Archive(comptime Writer: type) type {
     return struct {
-        writer: anytype,
+        writer: Writer,
 
         const Self = @This();
+
+        pub fn finish(self: *Self) !void {
+            try self.writer.writeByteNTimes(0, 1024);
+        }
 
         /// prefix is a path to prepend subpath with
         pub fn addFile(
@@ -167,7 +177,7 @@ pub fn Archive(comptime Writer: type) type {
             subpath: []const u8,
         ) !void {
             const path = if (prefix) |prefix_path|
-                try std.fs.join(allocator, &[_][]const u8{ prefix_path, subpath })
+                try std.fs.path.join(allocator, &[_][]const u8{ prefix_path, subpath })
             else
                 subpath;
             defer if (prefix != null) allocator.free(path);
@@ -176,26 +186,32 @@ pub fn Archive(comptime Writer: type) type {
             defer subfile.close();
 
             const stat = try subfile.stat();
-            var header = try Header.fromStat(stat, path);
+            const header = try Header.fromStat(stat, path);
+            var buf: [std.mem.page_size]u8 = undefined;
 
-            var fifo = std.fifo.LinearFifo(u8, .{ .Static = std.mem.page_size }).init();
             try self.writer.writeAll(std.mem.asBytes(&header));
-            var counter = std.io.countingWriter(self.writer());
-            try fifo.pump(file.reader(), counter.writer());
+            var counter = std.io.countingWriter(self.writer);
+
+            while (true) {
+                const n = try subfile.reader().read(&buf);
+                if (n == 0) break;
+
+                try counter.writer().writeAll(buf[0..n]);
+            }
+
             const padding = 512 - (counter.bytes_written % 512);
             try self.writer.writeByteNTimes(0, padding);
         }
 
         /// add slice of bytes as file `path`
         pub fn addSlice(self: *Self, slice: []const u8, path: []const u8) !void {
-            const stat = Stat{
+            const stat = std.fs.File.Stat{
                 .inode = undefined,
                 .size = slice.len,
                 .mode = undefined,
-                .kind = .file,
+                .kind = .File,
                 .atime = undefined,
-                // TODO: get current time
-                .mtime = 0,
+                .mtime = std.time.timestamp(),
                 .ctime = undefined,
             };
 
