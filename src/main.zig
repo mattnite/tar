@@ -5,23 +5,23 @@ const Allocator = std.mem.Allocator;
 
 // ustar tar implementation
 pub const Header = extern struct {
-    name: [100]u8 = std.mem.zeroes([100]u8),
-    mode: [7:0]u8 = [_:0]u8{ '0', '0', '0', '0', '6', '6', '6' },
-    uid: [7:0]u8 = [_:0]u8{'0'} ** 7,
-    gid: [7:0]u8 = [_:0]u8{'0'} ** 7,
-    size: [11:0]u8 = [_:0]u8{'0'} ** 11,
-    mtime: [11:0]u8 = [_:0]u8{'0'} ** 11,
-    checksum: [7:0]u8 = [_:0]u8{'0'} ** 7,
+    name: [100]u8,
+    mode: [7:0]u8,
+    uid: [7:0]u8,
+    gid: [7:0]u8,
+    size: [11:0]u8,
+    mtime: [11:0]u8,
+    checksum: [7:0]u8,
     typeflag: FileType,
-    linkname: [100]u8 = std.mem.zeroes([100]u8),
-    magic: [5:0]u8 = [_:0]u8{ 'u', 's', 't', 'a', 'r' },
-    version: [2]u8 = [_:0]u8{ '0', '0' },
-    uname: [31:0]u8 = [_:0]u8{ 'r', 'o', 'o', 't' } ++ std.mem.zeroes([27]u8),
-    gname: [31:0]u8 = [_:0]u8{ 'r', 'o', 'o', 't' } ++ std.mem.zeroes([27]u8),
-    devmajor: [7:0]u8 = [_:0]u8{'0'} ** 7,
-    devminor: [7:0]u8 = [_:0]u8{'0'} ** 7,
-    prefix: [155]u8 = std.mem.zeroes([155]u8),
-    pad: [12]u8 = std.mem.zeroes([12]u8),
+    linkname: [100]u8,
+    magic: [5:0]u8,
+    version: [2]u8,
+    uname: [31:0]u8,
+    gname: [31:0]u8,
+    devmajor: [7:0]u8,
+    devminor: [7:0]u8,
+    prefix: [155]u8,
+    pad: [12]u8,
 
     const Self = @This();
 
@@ -39,32 +39,87 @@ pub const Header = extern struct {
         _,
     };
 
+    fn init() Self {
+        var ret = std.mem.zeroes(Self);
+        ret.magic = [_:0]u8{ 'u', 's', 't', 'a', 'r' };
+        ret.version = [_:0]u8{ '0', '0' };
+        return ret;
+    }
+
+    fn setPath(self: *Self, path: []const u8) !void {
+        if (path.len > 100) {
+            var i: usize = 0;
+            while (i < path.len and path.len - i > 100) {
+                while (path[i] != '/') : (i += 1) {}
+            }
+
+            _ = try std.fmt.bufPrint(&self.prefix, "{s}", .{path[0..i]});
+            _ = try std.fmt.bufPrint(&self.name, "{s}", .{path[i + 1 ..]});
+        } else {
+            _ = try std.fmt.bufPrint(&self.name, "{s}", .{path});
+        }
+    }
+
+    fn setSize(self: *Self, size: usize) !void {
+        _ = try std.fmt.bufPrint(&self.size, "{o:0>11}", .{size});
+    }
+
+    fn setMtime(self: *Self, mtime: u32) !void {
+        _ = try std.fmt.bufPrint(&self.mtime, "{o:0>11}", .{mtime});
+    }
+
+    fn setMode(self: *Self, filetype: FileType, perm: u9) !void {
+        switch (filetype) {
+            .regular => _ = try std.fmt.bufPrint(&self.mode, "0100{o:0>3}", .{perm}),
+            .directory => _ = try std.fmt.bufPrint(&self.mode, "0040{o:0>3}", .{perm}),
+            else => return error.Unsupported,
+        }
+    }
+
+    fn setUid(self: *Self, uid: u32) !void {
+        _ = try std.fmt.bufPrint(&self.uid, "{o:0>7}", .{uid});
+    }
+
+    fn setGid(self: *Self, gid: u32) !void {
+        _ = try std.fmt.bufPrint(&self.gid, "{o:0>7}", .{gid});
+    }
+
+    fn updateChecksum(self: *Self) !void {
+        const offset = @byteOffsetOf(Self, "checksum");
+        var checksum: usize = 0;
+        for (std.mem.asBytes(self)) |val, i| {
+            checksum += if (i >= offset and i < offset + @sizeOf(@TypeOf(self.checksum)))
+                ' '
+            else
+                val;
+        }
+
+        _ = try std.fmt.bufPrint(&self.checksum, "{o:0>7}", .{checksum});
+    }
+
     fn fromStat(stat: std.fs.File.Stat, path: []const u8) !Header {
         if (std.mem.indexOf(u8, path, "\\") != null) return error.NeedPosixPath;
         if (std.fs.path.isAbsolute(path)) return error.NeedRelPath;
 
-        var ret = std.mem.zeroes(Header);
-        ret = Header{
-            .typeflag = switch (stat.kind) {
-                .File => .regular,
-                .Directory => .directory,
-                else => return error.UnsupportedType,
-            },
+        var ret = Self.init();
+        ret.typeflag = switch (stat.kind) {
+            .File => .regular,
+            .Directory => .directory,
+            else => return error.UnsupportedType,
         };
 
-        const name = if (path.len > 100) {
-            return error.Todo;
-        } else path;
+        try ret.setPath(path);
+        try ret.setSize(stat.size);
+        try ret.setMtime(@truncate(u32, @bitCast(u128, @divTrunc(stat.mtime, std.time.ns_per_s))));
+        try ret.setMode(ret.typeflag, @truncate(u9, stat.mode));
 
-        _ = try std.fmt.bufPrint(&ret.name, "{}", .{name});
-        _ = try std.fmt.bufPrint(&ret.size, "{o:0>11}", .{stat.size});
-        _ = try std.fmt.bufPrint(&ret.mtime, "{o:0>11}", .{stat.mtime});
+        try ret.setUid(0);
+        try ret.setGid(0);
 
-        var checksum: usize = 0;
-        for (std.mem.asBytes(&ret)) |val| checksum += val;
+        std.mem.copy(u8, &ret.uname, "root");
+        std.mem.copy(u8, &ret.gname, "root");
 
-        _ = try std.fmt.bufPrint(&ret.checksum, "{o:0>7}", .{checksum});
-
+        try ret.updateChecksum();
         return ret;
     }
 
@@ -158,30 +213,78 @@ pub fn instantiate(
     }
 }
 
-pub fn Archive(comptime Writer: type) type {
+pub fn builder(allocator: *Allocator, writer: anytype) Builder(@TypeOf(writer)) {
+    return Builder(@TypeOf(writer)).init(allocator, writer);
+}
+
+pub fn Builder(comptime Writer: type) type {
     return struct {
         writer: Writer,
+        allocator: *Allocator,
+        directories: std.StringHashMapUnmanaged(void),
+        buf_pool: std.ArrayListUnmanaged([]const u8),
 
         const Self = @This();
+
+        pub fn init(allocator: *Allocator, writer: Writer) Self {
+            return Self{
+                .allocator = allocator,
+                .writer = writer,
+                .directories = std.StringHashMapUnmanaged(void){},
+                .buf_pool = std.ArrayListUnmanaged([]const u8){},
+            };
+        }
+
+        pub fn deinit(self: *Self) void {
+            self.buf_pool.deinit(self.allocator);
+            self.directories.deinit(self.allocator);
+        }
 
         pub fn finish(self: *Self) !void {
             try self.writer.writeByteNTimes(0, 1024);
         }
 
+        fn maybeAddDirectories(
+            self: *Self,
+            path: []const u8,
+        ) !void {
+            var i: usize = 0;
+            while (i < path.len) : (i += 1) {
+                while (path[i] != '/' and i < path.len) i += 1;
+                if (i >= path.len) break;
+                const dirpath = path[0..i];
+                if (self.directories.contains(dirpath)) continue;
+
+                const stat = std.fs.File.Stat{
+                    .inode = undefined,
+                    .size = 0,
+                    .mode = 0o755,
+                    .kind = .Directory,
+                    .atime = undefined,
+                    .mtime = std.time.nanoTimestamp(),
+                    .ctime = undefined,
+                };
+
+                const header = try Header.fromStat(stat, dirpath);
+                try self.writer.writeAll(std.mem.asBytes(&header));
+            }
+        }
+
         /// prefix is a path to prepend subpath with
         pub fn addFile(
             self: *Self,
-            allocator: *Allocator,
             root: std.fs.Dir,
             prefix: ?[]const u8,
             subpath: []const u8,
         ) !void {
             const path = if (prefix) |prefix_path|
-                try std.fs.path.join(allocator, &[_][]const u8{ prefix_path, subpath })
+                try std.fs.path.join(self.allocator, &[_][]const u8{ prefix_path, subpath })
             else
                 subpath;
-            defer if (prefix != null) allocator.free(path);
+            defer if (prefix != null) self.allocator.free(path);
 
+            if (std.fs.path.dirname(path)) |dirname|
+                try self.maybeAddDirectories(path[0 .. dirname.len + 1]);
             const subfile = try root.openFile(subpath, .{ .read = true, .write = true });
             defer subfile.close();
 
@@ -208,10 +311,10 @@ pub fn Archive(comptime Writer: type) type {
             const stat = std.fs.File.Stat{
                 .inode = undefined,
                 .size = slice.len,
-                .mode = undefined,
+                .mode = 0o644,
                 .kind = .File,
                 .atime = undefined,
-                .mtime = std.time.timestamp(),
+                .mtime = std.time.nanoTimestamp(),
                 .ctime = undefined,
             };
 
@@ -224,6 +327,95 @@ pub fn Archive(comptime Writer: type) type {
     };
 }
 
-pub fn archive(writer: anytype) Archive(@TypeOf(writer)) {
-    return .{ .writer = writer };
+pub const PaxHeaderMap = struct {
+    text: []const u8,
+    map: std.StringHashMap([]const u8),
+
+    const Self = @This();
+
+    pub fn init(allocator: *Allocator, reader: anytype) !Self {
+        // TODO: header verification
+        const header = try reader.readStruct(Header);
+        if (header.typeflag != .pax_global) return error.NotPaxGlobalHeader;
+
+        const size = try std.fmt.parseInt(usize, &header.size, 8);
+        const text = try allocator.alloc(u8, size);
+        errdefer allocator.free(text);
+
+        var i: usize = 0;
+        while (i < size) : (i = try reader.read(text[i..])) {}
+
+        var map = std.StringHashMap([]const u8).init(allocator);
+        errdefer map.deinit();
+
+        var it = std.mem.tokenize(text, "\n");
+        while (it.next()) |line| {
+            const begin = (std.mem.indexOf(u8, line, " ") orelse return error.BadMapEntry) + 1;
+            const eql = std.mem.indexOf(u8, line[begin..], "=") orelse return error.BadMapEntry;
+            try map.put(line[begin .. begin + eql], line[begin + eql + 1 ..]);
+        }
+
+        return Self{
+            .text = text,
+            .map = map,
+        };
+    }
+
+    pub fn get(self: Self, key: []const u8) ?[]const u8 {
+        return self.map.get(key);
+    }
+
+    pub fn deinit(self: *Self) void {
+        self.map.allocator.free(self.text);
+        self.map.deinit();
+    }
+};
+
+pub fn fileExtractor(path: []const u8, reader: anytype) FileExtractor(@TypeOf(reader)) {
+    return FileExtractor(@TypeOf(reader)).init(path, reader);
+}
+
+pub fn FileExtractor(comptime ReaderType: type) type {
+    return struct {
+        path: []const u8,
+        internal: ReaderType,
+        len: ?usize,
+
+        const Self = @This();
+
+        pub fn init(path: []const u8, internal: ReaderType) Self {
+            return Self{
+                .path = path,
+                .internal = internal,
+                .len = null,
+            };
+        }
+
+        pub const Error = ReaderType.Error || error{ FileNotFound, EndOfStream } || std.fmt.ParseIntError;
+        pub const Reader = std.io.Reader(*Self, Error, read);
+
+        pub fn read(self: *Self, buf: []u8) Error!usize {
+            if (self.len == null) {
+                while (true) {
+                    const header = try self.internal.readStruct(Header);
+                    const size = try std.fmt.parseInt(usize, &header.size, 8);
+                    const name = header.name[0 .. std.mem.indexOf(u8, &header.name, "\x00") orelse header.name.len];
+                    if (std.mem.eql(u8, name, self.path)) {
+                        self.len = size;
+                        break;
+                    } else {
+                        try self.internal.skipBytes(size + (512 - (size % 512)), .{});
+                    }
+                }
+            }
+
+            const n = try self.internal.read(buf[0..std.math.min(self.len.?, buf.len)]);
+            self.len.? -= n;
+            return n;
+        }
+
+        pub fn reader(self: *Self) Reader {
+            return .{ .context = self };
+        }
+    };
 }
