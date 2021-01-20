@@ -1,4 +1,5 @@
 const std = @import("std");
+const builtin = @import("builtin");
 
 const testing = std.testing;
 const Allocator = std.mem.Allocator;
@@ -258,7 +259,10 @@ pub fn Builder(comptime Writer: type) type {
                 const stat = std.fs.File.Stat{
                     .inode = undefined,
                     .size = 0,
-                    .mode = 0o755,
+                    .mode = switch (builtin.os.tag) {
+                        .windows => 0,
+                        else => 0o755,
+                    },
                     .kind = .Directory,
                     .atime = undefined,
                     .mtime = std.time.nanoTimestamp(),
@@ -311,7 +315,10 @@ pub fn Builder(comptime Writer: type) type {
             const stat = std.fs.File.Stat{
                 .inode = undefined,
                 .size = slice.len,
-                .mode = 0o644,
+                .mode = switch (builtin.os.tag) {
+                    .windows => 0,
+                    else => 0o644,
+                },
                 .kind = .File,
                 .atime = undefined,
                 .mtime = std.time.nanoTimestamp(),
