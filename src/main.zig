@@ -61,7 +61,7 @@ pub const Header = extern struct {
         }
     }
 
-    fn setSize(self: *Self, size: usize) !void {
+    fn setSize(self: *Self, size: u64) !void {
         _ = try std.fmt.bufPrint(&self.size, "{o:0>11}", .{size});
     }
 
@@ -307,7 +307,7 @@ pub fn Builder(comptime Writer: type) type {
             }
 
             const padding = 512 - (counter.bytes_written % 512);
-            try self.writer.writeByteNTimes(0, padding);
+            try self.writer.writeByteNTimes(0, @intCast(usize, padding));
         }
 
         /// add slice of bytes as file `path`
