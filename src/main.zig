@@ -221,24 +221,22 @@ pub fn builder(allocator: *Allocator, writer: anytype) Builder(@TypeOf(writer)) 
 pub fn Builder(comptime Writer: type) type {
     return struct {
         writer: Writer,
-        allocator: *Allocator,
-        directories: std.StringHashMapUnmanaged(void),
-        buf_pool: std.ArrayListUnmanaged([]const u8),
+        arena: std.heap.ArenaAllocator,
+        directories: std.StringHashMap(void),
 
         const Self = @This();
 
         pub fn init(allocator: *Allocator, writer: Writer) Self {
             return Self{
-                .allocator = allocator,
+                .arena = std.heap.ArenaAllocator.init(allocator),
                 .writer = writer,
-                .directories = std.StringHashMapUnmanaged(void){},
-                .buf_pool = std.ArrayListUnmanaged([]const u8){},
+                .directories = std.StringHashMap(void).init(allocator),
             };
         }
 
         pub fn deinit(self: *Self) void {
-            self.buf_pool.deinit(self.allocator);
-            self.directories.deinit(self.allocator);
+            self.directories.deinit();
+            self.arena.deinit();
         }
 
         pub fn finish(self: *Self) !void {
@@ -253,8 +251,8 @@ pub fn Builder(comptime Writer: type) type {
             while (i < path.len) : (i += 1) {
                 while (path[i] != '/' and i < path.len) i += 1;
                 if (i >= path.len) break;
-                const dirpath = path[0..i];
-                if (self.directories.contains(dirpath)) continue;
+                const dirpath = try self.arena.allocator.dupe(u8, path[0..i]);
+                if (self.directories.contains(dirpath)) continue else try self.directories.put(dirpath, {});
 
                 const stat = std.fs.File.Stat{
                     .inode = undefined,
@@ -282,10 +280,10 @@ pub fn Builder(comptime Writer: type) type {
             subpath: []const u8,
         ) !void {
             const path = if (prefix) |prefix_path|
-                try std.fs.path.join(self.allocator, &[_][]const u8{ prefix_path, subpath })
+                try std.fs.path.join(self.arena.child_allocator, &[_][]const u8{ prefix_path, subpath })
             else
                 subpath;
-            defer if (prefix != null) self.allocator.free(path);
+            defer if (prefix != null) self.arena.child_allocator.free(path);
 
             if (std.fs.path.dirname(path)) |dirname|
                 try self.maybeAddDirectories(path[0 .. dirname.len + 1]);
@@ -306,7 +304,10 @@ pub fn Builder(comptime Writer: type) type {
                 try counter.writer().writeAll(buf[0..n]);
             }
 
-            const padding = 512 - (counter.bytes_written % 512);
+            const padding = blk: {
+                const mod = counter.bytes_written % 512;
+                break :blk if (mod > 0) 512 - mod else 0;
+            };
             try self.writer.writeByteNTimes(0, @intCast(usize, padding));
         }
 
@@ -326,7 +327,10 @@ pub fn Builder(comptime Writer: type) type {
             };
 
             var header = try Header.fromStat(stat, path);
-            const padding = 512 - (slice.len % 512);
+            const padding = blk: {
+                const mod = slice.len % 512;
+                break :blk if (mod > 0) 512 - mod else 0;
+            };
             try self.writer.writeAll(std.mem.asBytes(&header));
             try self.writer.writeAll(slice);
             try self.writer.writeByteNTimes(0, padding);
@@ -405,12 +409,15 @@ pub fn FileExtractor(comptime ReaderType: type) type {
             if (self.len == null) {
                 while (true) {
                     const header = try self.internal.readStruct(Header);
+                    for (std.mem.asBytes(&header)) |c| {
+                        if (c != 0) break;
+                    } else return error.FileNotFound;
                     const size = try std.fmt.parseInt(usize, &header.size, 8);
                     const name = header.name[0 .. std.mem.indexOf(u8, &header.name, "\x00") orelse header.name.len];
                     if (std.mem.eql(u8, name, self.path)) {
                         self.len = size;
                         break;
-                    } else {
+                    } else if (size > 0) {
                         try self.internal.skipBytes(size + (512 - (size % 512)), .{});
                     }
                 }
