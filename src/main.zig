@@ -86,7 +86,7 @@ pub const Header = extern struct {
     }
 
     fn updateChecksum(self: *Self) !void {
-        const offset = @byteOffsetOf(Self, "checksum");
+        const offset = @offsetOf(Self, "checksum");
         var checksum: usize = 0;
         for (std.mem.asBytes(self)) |val, i| {
             checksum += if (i >= offset and i < offset + @sizeOf(@TypeOf(self.checksum)))
@@ -133,7 +133,7 @@ pub const Header = extern struct {
 };
 
 test "Header size" {
-    testing.expectEqual(512, @sizeOf(Header));
+    try testing.expectEqual(512, @sizeOf(Header));
 }
 
 pub fn instantiate(
