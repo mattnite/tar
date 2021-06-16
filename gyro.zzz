@@ -1,7 +1,6 @@
 pkgs:
   tar:
     version: 0.0.1
-    author: mattnite
     description: "tar library that has a bad interface ngl"
     license: MIT
     source_url: "https://github.com/mattnite/tar"
