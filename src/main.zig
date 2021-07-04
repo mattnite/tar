@@ -26,7 +26,7 @@ pub const Header = extern struct {
 
     const Self = @This();
 
-    const FileType = extern enum(u8) {
+    const FileType = enum(u8) {
         regular = '0',
         hard_link = '1',
         symbolic_link = '2',
@@ -151,7 +151,6 @@ pub fn instantiate(
                 err;
         };
 
-        const block = std.mem.asBytes(&header);
         if (header.isBlank()) {
             count += 1;
             continue;
