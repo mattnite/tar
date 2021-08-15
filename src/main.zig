@@ -163,14 +163,14 @@ pub fn instantiate(
         var components = std.ArrayList([]const u8).init(allocator);
         defer components.deinit();
 
-        var path_it = std.mem.tokenize(&header.prefix, "/\x00");
+        var path_it = std.mem.tokenize(u8, &header.prefix, "/\x00");
         if (header.prefix[0] != 0) {
             while (path_it.next()) |component| {
                 try components.append(component);
             }
         }
 
-        path_it = std.mem.tokenize(&header.name, "/\x00");
+        path_it = std.mem.tokenize(u8, &header.name, "/\x00");
         while (path_it.next()) |component| {
             try components.append(component);
         }
@@ -358,7 +358,7 @@ pub const PaxHeaderMap = struct {
         var map = std.StringHashMap([]const u8).init(allocator);
         errdefer map.deinit();
 
-        var it = std.mem.tokenize(text, "\n");
+        var it = std.mem.tokenize(u8, text, "\n");
         while (it.next()) |line| {
             const begin = (std.mem.indexOf(u8, line, " ") orelse return error.BadMapEntry) + 1;
             const eql = std.mem.indexOf(u8, line[begin..], "=") orelse return error.BadMapEntry;
