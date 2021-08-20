@@ -265,8 +265,11 @@ pub fn Builder(comptime Writer: type) type {
                     .mtime = std.time.nanoTimestamp(),
                     .ctime = undefined,
                 };
+                const allocator = self.arena.child_allocator;
+                const posix_dirpath = try std.mem.replaceOwned(u8, allocator, dirpath, std.fs.path.sep_str_windows, std.fs.path.sep_str_posix);
+                defer allocator.free(posix_dirpath);
 
-                const header = try Header.fromStat(stat, dirpath);
+                const header = try Header.fromStat(stat, posix_dirpath);
                 try self.writer.writeAll(std.mem.asBytes(&header));
             }
         }
@@ -278,19 +281,23 @@ pub fn Builder(comptime Writer: type) type {
             prefix: ?[]const u8,
             subpath: []const u8,
         ) !void {
+            const allocator = self.arena.child_allocator;
             const path = if (prefix) |prefix_path|
-                try std.fs.path.join(self.arena.child_allocator, &[_][]const u8{ prefix_path, subpath })
+                try std.fs.path.join(allocator, &[_][]const u8{ prefix_path, subpath })
             else
                 subpath;
-            defer if (prefix != null) self.arena.child_allocator.free(path);
+            defer if (prefix != null) allocator.free(path);
 
-            if (std.fs.path.dirname(path)) |dirname|
-                try self.maybeAddDirectories(path[0 .. dirname.len + 1]);
+            const posix_path = try std.mem.replaceOwned(u8, allocator, path, std.fs.path.sep_str_windows, std.fs.path.sep_str_posix);
+            defer allocator.free(posix_path);
+
+            if (std.fs.path.dirname(posix_path)) |dirname|
+                try self.maybeAddDirectories(posix_path[0 .. dirname.len + 1]);
             const subfile = try root.openFile(subpath, .{ .read = true, .write = true });
             defer subfile.close();
 
             const stat = try subfile.stat();
-            const header = try Header.fromStat(stat, path);
+            const header = try Header.fromStat(stat, posix_path);
             var buf: [std.mem.page_size]u8 = undefined;
 
             try self.writer.writeAll(std.mem.asBytes(&header));
@@ -312,6 +319,10 @@ pub fn Builder(comptime Writer: type) type {
 
         /// add slice of bytes as file `path`
         pub fn addSlice(self: *Self, slice: []const u8, path: []const u8) !void {
+            const allocator = self.arena.child_allocator;
+            const posix_path = try std.mem.replaceOwned(u8, allocator, path, std.fs.path.sep_str_windows, std.fs.path.sep_str_posix);
+            defer allocator.free(posix_path);
+
             const stat = std.fs.File.Stat{
                 .inode = undefined,
                 .size = slice.len,
@@ -325,7 +336,7 @@ pub fn Builder(comptime Writer: type) type {
                 .ctime = undefined,
             };
 
-            var header = try Header.fromStat(stat, path);
+            var header = try Header.fromStat(stat, posix_path);
             const padding = blk: {
                 const mod = slice.len % 512;
                 break :blk if (mod > 0) 512 - mod else 0;
