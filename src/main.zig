@@ -137,7 +137,7 @@ test "Header size" {
 }
 
 pub fn instantiate(
-    allocator: *Allocator,
+    allocator: Allocator,
     dir: std.fs.Dir,
     reader: anytype,
     skip_depth: usize,
@@ -213,7 +213,7 @@ pub fn instantiate(
     }
 }
 
-pub fn builder(allocator: *Allocator, writer: anytype) Builder(@TypeOf(writer)) {
+pub fn builder(allocator: Allocator, writer: anytype) Builder(@TypeOf(writer)) {
     return Builder(@TypeOf(writer)).init(allocator, writer);
 }
 
@@ -225,7 +225,7 @@ pub fn Builder(comptime Writer: type) type {
 
         const Self = @This();
 
-        pub fn init(allocator: *Allocator, writer: Writer) Self {
+        pub fn init(allocator: Allocator, writer: Writer) Self {
             return Self{
                 .arena = std.heap.ArenaAllocator.init(allocator),
                 .writer = writer,
@@ -250,7 +250,7 @@ pub fn Builder(comptime Writer: type) type {
             while (i < path.len) : (i += 1) {
                 while (path[i] != '/' and i < path.len) i += 1;
                 if (i >= path.len) break;
-                const dirpath = try self.arena.allocator.dupe(u8, path[0..i]);
+                const dirpath = try self.arena.allocator().dupe(u8, path[0..i]);
                 if (self.directories.contains(dirpath)) continue else try self.directories.put(dirpath, {});
 
                 const stat = std.fs.File.Stat{
@@ -354,7 +354,7 @@ pub const PaxHeaderMap = struct {
 
     const Self = @This();
 
-    pub fn init(allocator: *Allocator, reader: anytype) !Self {
+    pub fn init(allocator: Allocator, reader: anytype) !Self {
         // TODO: header verification
         const header = try reader.readStruct(Header);
         if (header.typeflag != .pax_global) return error.NotPaxGlobalHeader;
