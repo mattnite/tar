@@ -293,7 +293,7 @@ pub fn Builder(comptime Writer: type) type {
 
             if (std.fs.path.dirname(posix_path)) |dirname|
                 try self.maybeAddDirectories(posix_path[0 .. dirname.len + 1]);
-            const subfile = try root.openFile(subpath, .{ .read = true, .write = true });
+            const subfile = try root.openFile(subpath, .{ .mode = .read_write });
             defer subfile.close();
 
             const stat = try subfile.stat();
