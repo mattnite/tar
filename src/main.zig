@@ -88,7 +88,7 @@ pub const Header = extern struct {
     fn updateChecksum(self: *Self) !void {
         const offset = @offsetOf(Self, "checksum");
         var checksum: usize = 0;
-        for (std.mem.asBytes(self)) |val, i| {
+        for (std.mem.asBytes(self), 0..) |val, i| {
             checksum += if (i >= offset and i < offset + @sizeOf(@TypeOf(self.checksum)))
                 ' '
             else
@@ -111,8 +111,8 @@ pub const Header = extern struct {
 
         try ret.setPath(path);
         try ret.setSize(stat.size);
-        try ret.setMtime(@truncate(u32, @bitCast(u128, @divTrunc(stat.mtime, std.time.ns_per_s))));
-        try ret.setMode(ret.typeflag, @truncate(u9, stat.mode));
+        try ret.setMtime(@as(u32, @truncate(@as(u128, @bitCast(@divTrunc(stat.mtime, std.time.ns_per_s))))));
+        try ret.setMode(ret.typeflag, @as(u9, @truncate(stat.mode)));
 
         try ret.setUid(0);
         try ret.setGid(0);
@@ -314,7 +314,7 @@ pub fn Builder(comptime Writer: type) type {
                 const mod = counter.bytes_written % 512;
                 break :blk if (mod > 0) 512 - mod else 0;
             };
-            try self.writer.writeByteNTimes(0, @intCast(usize, padding));
+            try self.writer.writeByteNTimes(0, @as(usize, @intCast(padding)));
         }
 
         /// add slice of bytes as file `path`
